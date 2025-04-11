@@ -1,8 +1,8 @@
 from pydantic import BaseModel
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 class JsonUploadResponse(BaseModel):
     status: str
     message: str
     data_size: int
-    file_details: Dict[str, str] 
+    file_details: List[Dict] 
