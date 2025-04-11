@@ -78,7 +78,7 @@ class GoogleDriveService:
             # Преобразуем данные в JSON, независимо от их типа
             try:
                 json_bytes = json.dumps(json_data, indent=2, ensure_ascii=False).encode('utf-8')
-            except TypeError as e:
+            except (TypeError, ValueError) as e:
                 # Если данные не сериализуемы напрямую, попробуем преобразовать их
                 try:
                     # Для сложных объектов, не сериализуемых стандартным образом
@@ -109,10 +109,15 @@ class GoogleDriveService:
                 fields='id, name, webViewLink'
             ).execute()
             
+            # Защита от None значений в ответе
+            file_id = file.get('id') if file and 'id' in file else 'unknown'
+            filename = file.get('name') if file and 'name' in file else 'unknown'
+            web_link = file.get('webViewLink') if file and 'webViewLink' in file else '#'
+            
             return {
-                'file_id': file.get('id'),
-                'filename': file.get('name'),
-                'web_link': file.get('webViewLink')
+                'file_id': file_id,
+                'filename': filename,
+                'web_link': web_link
             }
             
         except Exception as e:
@@ -121,8 +126,12 @@ class GoogleDriveService:
             error_details = traceback.format_exc()
             print(f"Error uploading to Google Drive: {str(e)}\n{error_details}")
             
-            # Возвращаем информацию об ошибке
-            raise Exception(f"Error uploading to Google Drive: {str(e)}")
+            # Возвращаем базовую информацию даже при ошибке
+            return {
+                'file_id': 'error',
+                'filename': filename,
+                'web_link': f'Error: {str(e)}'
+            }
 
 
 # Создаем синглтон для сервиса
