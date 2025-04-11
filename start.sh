@@ -1,3 +1,3 @@
 #!/bin/bash
 pip install -r requirements.txt
-python -m run.py
+python -m run
