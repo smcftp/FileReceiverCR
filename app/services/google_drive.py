@@ -63,29 +63,46 @@ class GoogleDriveService:
         except Exception as e:
             raise Exception(f"Ошибка инициализации Google Drive сервиса: {str(e)}")
 
-    def upload_json(self, json_data: Dict[str, Any], filename: str) -> Dict[str, str]:
+    def upload_json(self, json_data: Any, filename: str) -> Dict[str, str]:
         """
         Upload JSON data to Google Drive
         
         Args:
-            json_data: Dictionary containing JSON data
+            json_data: Any JSON-serializable data (dict, list, etc.)
             filename: Name for the file on Google Drive
             
         Returns:
             dict: File metadata from Google Drive
         """
         try:
-            json_bytes = json.dumps(json_data, indent=2).encode('utf-8')
+            # Преобразуем данные в JSON, независимо от их типа
+            try:
+                json_bytes = json.dumps(json_data, indent=2, ensure_ascii=False).encode('utf-8')
+            except TypeError as e:
+                # Если данные не сериализуемы напрямую, попробуем преобразовать их
+                try:
+                    # Для сложных объектов, не сериализуемых стандартным образом
+                    import pickle
+                    pickled_data = pickle.dumps(json_data)
+                    json_bytes = json.dumps({"pickled_data": str(pickled_data)}).encode('utf-8')
+                except Exception:
+                    # Последняя попытка - просто преобразовать в строку
+                    json_bytes = json.dumps({"data": str(json_data)}).encode('utf-8')
+            
+            # Создаем метаданные файла
             file_metadata = {'name': filename}
             
+            # Создаем BytesIO объект из JSON-байтов
             file_content = BytesIO(json_bytes)
             
+            # Создаем медиа-объект для загрузки
             media = MediaIoBaseUpload(
                 file_content,
                 mimetype='application/json',
                 resumable=True
             )
             
+            # Загружаем файл
             file = self.service.files().create(
                 body=file_metadata,
                 media_body=media,
@@ -99,7 +116,14 @@ class GoogleDriveService:
             }
             
         except Exception as e:
+            # Логируем ошибку для отладки
+            import traceback
+            error_details = traceback.format_exc()
+            print(f"Error uploading to Google Drive: {str(e)}\n{error_details}")
+            
+            # Возвращаем информацию об ошибке
             raise Exception(f"Error uploading to Google Drive: {str(e)}")
+
 
 # Создаем синглтон для сервиса
 drive_service = GoogleDriveService() 
