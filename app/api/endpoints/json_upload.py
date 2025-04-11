@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Security
 from fastapi.security.api_key import APIKeyHeader
-from typing import Dict, Any
+from typing import Dict, Any, List
 from datetime import datetime
 import json
 
@@ -22,7 +22,7 @@ async def get_api_key(api_key_header: str = Security(api_key_header)) -> str:
 
 @router.post("/upload-json/", response_model=JsonUploadResponse)
 async def upload_json(
-    json_data: Dict[str, Any],
+    json_data: List[Dict],
     api_key: str = Depends(get_api_key)
 ) -> Dict[str, Any]:
     """
