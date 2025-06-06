@@ -258,9 +258,9 @@ async def process_bank_accounts(
     # specific_date = datetime(2025, 3, 21)
 
     # Generate the same formats as in the original code
-    processing_date_str = specific_date.strftime("%Y-%m-%d")  # "2025-12-31"
-    processing_date_dt = specific_date.date()  # datetime.date(2025, 12, 31)
-    date_id_for_batch = int(processing_date_str.replace("-", ""))  # 20251231
+    # processing_date_str = specific_date.strftime("%Y-%m-%d")  # "2025-12-31"
+    # processing_date_dt = specific_date.date()  # datetime.date(2025, 12, 31)
+    # date_id_for_batch = int(processing_date_str.replace("-", ""))  # 20251231
     
     logger.info(f"Дата обработки: {processing_date_str} (date_id={date_id_for_batch})")
     logger.info(f"Количество записей для обработки: {len(records)}")
