@@ -250,12 +250,12 @@ async def process_bank_accounts(
     errors_count = 0
     
     # Генерируем дату обработки
-    # processing_date_str = datetime.now().strftime("%Y-%m-%d")
-    # processing_date_dt = datetime.strptime(processing_date_str, "%Y-%m-%d").date()
-    # date_id_for_batch = int(processing_date_str.replace("-", ""))
+    processing_date_str = datetime.now().strftime("%Y-%m-%d")
+    processing_date_dt = datetime.strptime(processing_date_str, "%Y-%m-%d").date()
+    date_id_for_batch = int(processing_date_str.replace("-", ""))
     
     # Set a specific date (December 31, 2025)
-    specific_date = datetime(2025, 3, 21)
+    # specific_date = datetime(2025, 3, 21)
 
     # Generate the same formats as in the original code
     processing_date_str = specific_date.strftime("%Y-%m-%d")  # "2025-12-31"
