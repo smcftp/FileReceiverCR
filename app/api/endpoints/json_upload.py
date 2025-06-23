@@ -64,17 +64,25 @@ class JsonUploadPayload(BaseModel):
 # Функция фоновой задачи (без изменений, но проверим передачу данных)
 def _upload_to_drive_background(json_data_payload: Dict[str, Any], filename: str, description: Optional[str]):
     """Функция для выполнения загрузки на Google Drive в фоне."""
-    logger = logging.getLogger(__name__) # Получаем логгер внутри задачи
-    logger.info(f"[Background Task] Запуск загрузки '{filename}' на Google Drive...")
+    # Получаем логгер внутри задачи для корректного отображения имени модуля
+    task_logger = logging.getLogger(f"{__name__}._upload_to_drive_background")
+    task_logger.info(f"Начинается фоновая задача по загрузке файла '{filename}' (Описание: '{description if description else 'N/A'}') на Google Drive.")
     try:
-        # Передаем весь payload, т.к. он содержит данные
+        task_logger.debug(f"Попытка загрузки JSON на Google Drive: {json_data_payload.keys()} для файла {filename}")
         result = drive_service.upload_json(json_data_payload, filename=filename, description=description)
-        if result.get('file_id') not in ('error', 'local_only'):
-            logger.info(f"[Background Task] Файл '{filename}' успешно загружен. Link: {result.get('web_link')}")
+
+        if result.get('file_id') and result.get('file_id') not in ('error', 'local_only'):
+            task_logger.info(f"✅ Успешно завершена загрузка файла '{filename}' на Google Drive. "
+                             f"ID файла: {result.get('file_id')}, Ссылка: {result.get('web_link', 'N/A')}")
         else:
-            logger.error(f"[Background Task] Ошибка загрузки '{filename}' на Google Drive: {result.get('error') or result.get('web_link')}")
+            error_details = result.get('error') or result.get('web_link')
+            task_logger.error(f"❌ Ошибка загрузки файла '{filename}' на Google Drive. "
+                              f"Результат: {result}. Детали ошибки: {error_details}")
     except Exception as e:
-        logger.error(f"[Background Task] Неожиданная ошибка при загрузке '{filename}' на Google Drive: {e}", exc_info=True)
+        task_logger.exception(f"Произошла непредвиденная ошибка при выполнении фоновой задачи для файла '{filename}': {e}")
+        # Использование task_logger.exception() автоматически включает информацию о трассировке стека
+    finally:
+        task_logger.info(f"Фоновая задача для файла '{filename}' завершена.")
 
 
 @router.post("/upload", response_model=JsonUploadResponse)
