@@ -7,13 +7,13 @@ import traceback
 from datetime import datetime, date
 from typing import Dict, List, Optional, Tuple, Union, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update
 from decimal import Decimal
 import sys
 import os # <-- Добавляем импорт os
 from dotenv import load_dotenv # <-- Добавляем импорт load_dotenv
 
-from app.db.models_maket import Loan
+from app.db.models_maket import Loan, DimDate, DailyLoanBalance
 from app.services.file_processor_factory import register_async_file_processor
 
 # Загружаем переменные окружения в начале файла
@@ -33,7 +33,7 @@ FIELD_MAPPINGS = {
     "start_date": ["start_date", "startDate", "дата_начала", "Дата начала"],
     "end_date": ["end_date", "endDate", "дата_окончания", "Дата окончания"],
     "status": ["status", "статус", "Статус"],
-    "processing_date": ["processing_date", "processingDate", "дата_обработки", "датаОбработки"],
+    "processing_date": ["processing_date", "processingDate", "дата_обработки", "датаОбработки", "Дата договора"],
 }
 
 # Настраиваем логгер
@@ -160,7 +160,7 @@ async def process_zaimy(
     else:
         logger.info("DEBUG_ENCODING: sys.stdout is not available or has no encoding property.")
     # --- Конец добавлено для отладки кодировки ---
-
+    
     if not db_session:
         logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: Отсутствует сессия БД!")
         return {
@@ -194,6 +194,9 @@ async def process_zaimy(
     loans_updated = 0
     loans_created = 0
     errors_count = 0
+    
+    # NEW: Set для отслеживания уникальных date_id, обработанных в DailyLoanBalance
+    processed_date_ids = set() 
 
     try:
         # Получаем все существующие займы одним запросом
@@ -246,8 +249,8 @@ async def process_zaimy(
                         logger.error(traceback.format_exc())
                         # В случае ошибки конвертации, оставляем значение duty_decimal
                         calculated_duty_byn_money = duty_decimal
-
-                # Подготавливаем данные для обновления/создания
+                
+                # Подготавливаем данные для обновления/создания Loan
                 loan_data = {
                     "source_loan_id": loan_id,
                     "contract_number": get_field_value(record, "contract_number", f"LOAN-{loan_id}"),
@@ -295,17 +298,135 @@ async def process_zaimy(
                 # Промежуточный flush каждые 50 записей
                 if idx > 0 and idx % 50 == 0:
                     await db_session.flush()
-                    logger.info(f"✅ Промежуточный flush после {idx} записей")
+                    logger.info(f"✅ Промежуточный flush после {idx} записей (Loan)")
 
             except Exception as e:
                 errors_count += 1
-                logger.error(f"❌ Ошибка при обработке записи {idx}: {str(e)}")
+                logger.error(f"❌ Ошибка при обработке записи {idx} (Loan): {str(e)}")
                 logger.error(traceback.format_exc())
                 continue
 
-        # Финальный flush и коммит
+        # Финальный flush и коммит для всех индивидуальных записей Loan
         await db_session.flush()
         await db_session.commit()
+        logger.info("✅ Все индивидуальные Loan записи зафиксированы.")
+
+        # --- Логика для DailyLoanBalance ---
+        # Теперь проходим по записям еще раз, чтобы обработать DailyLoanBalance
+        # Это делается после коммита Loan, чтобы гарантировать наличие loan.id
+        for idx, record in enumerate(records):
+            try:
+                loan_id_from_source = str(get_field_value(record, "ID"))
+                
+                # Находим только что созданный или обновленный Loan, чтобы получить его внутренний ID
+                current_loan_query = select(Loan).where(Loan.source_loan_id == loan_id_from_source)
+                current_loan_result = await db_session.execute(current_loan_query)
+                current_loan = current_loan_result.scalar_one_or_none()
+
+                if not current_loan:
+                    logger.warning(f"ℹ️ Не найден Loan для source_loan_id {loan_id_from_source} после обработки. Пропускаем DailyLoanBalance.")
+                    continue
+
+                # NEW: Используем текущую дату для DailyLoanBalance
+                daily_balance_date_obj = datetime.now().date() # <-- Установка текущей даты
+                
+                date_dimension_query = select(DimDate.date_id).where(DimDate.date == daily_balance_date_obj)
+                date_dimension_result = await db_session.execute(date_dimension_query)
+                date_id = date_dimension_result.scalar_one_or_none()
+
+                if not date_id:
+                    logger.warning(f"❌ Не найдена запись в DimDate для текущей даты {daily_balance_date_obj}. Пропускаем DailyLoanBalance для {loan_id_from_source}. Убедитесь, что DimDate заполнена для этой даты.")
+                    # В реальной системе здесь можно добавить логику для создания записи в DimDate
+                    continue
+                
+                # Добавляем date_id в наш set для последующей агрегации
+                processed_date_ids.add(date_id)
+
+                # 2. Получаем current_debt_byn
+                duty_raw = get_field_value(record, "duty", 0)
+                loan_currency_value = get_field_value(record, "currency", "BYN")
+                duty_decimal = Decimal(duty_raw)
+                calculated_duty_byn_money = duty_decimal # Инициализация
+
+                if loan_currency_value not in ["BLR", "BYN"]:
+                    try:
+                        calculated_duty_byn_money = convert_currency(loan_currency_value, duty_decimal)
+                    except Exception as e:
+                        logger.error(f"❌ Ошибка конвертации 'duty_money' для DailyLoanBalance из {loan_currency_value} в BYN: {e}")
+                        calculated_duty_byn_money = duty_decimal # В случае ошибки, используем исходное значение
+
+                # 3. Проверяем существование DailyLoanBalance и обновляем/создаем
+                existing_daily_balance_query = select(DailyLoanBalance).where(
+                    DailyLoanBalance.loan_id == current_loan.id,
+                    DailyLoanBalance.date_id == date_id
+                )
+                existing_daily_balance_result = await db_session.execute(existing_daily_balance_query)
+                existing_daily_balance = existing_daily_balance_result.scalar_one_or_none()
+
+                if existing_daily_balance:
+                    # Обновляем, если значение долга изменилось
+                    if existing_daily_balance.current_debt_byn != calculated_duty_byn_money:
+                        existing_daily_balance.current_debt_byn = calculated_duty_byn_money
+                        # total_repaid_byn: будет обновлен позже в пакетной операции
+                        logger.info(f"✅ Обновлен current_debt_byn в DailyLoanBalance для займа {current_loan.source_loan_id} на дату {daily_balance_date_obj}")
+                else:
+                    # Создаем новую запись. total_repaid_byn пока ставим 0.00, будет обновлен позже.
+                    new_daily_balance = DailyLoanBalance(
+                        loan_id=current_loan.id,
+                        date_id=date_id,
+                        current_debt_byn=calculated_duty_byn_money,
+                        total_repaid_byn=Decimal('0.00') # <-- Временное значение, будет обновлено пакетно
+                    )
+                    db_session.add(new_daily_balance)
+                    logger.info(f"✅ Создан DailyLoanBalance для займа {current_loan.source_loan_id} на дату {daily_balance_date_obj}")
+
+            except Exception as e:
+                errors_count += 1
+                logger.error(f"❌ Ошибка при обработке DailyLoanBalance для записи {loan_id_from_source}: {str(e)}")
+                logger.error(traceback.format_exc())
+                continue
+
+        # Финальный flush и коммит для всех индивидуальных DailyLoanBalance записей
+        await db_session.flush()
+        await db_session.commit()
+        logger.info("✅ Все индивидуальные DailyLoanBalance записи зафиксированы.")
+
+        # --- NEW LOGIC: Рассчитываем и обновляем total_repaid_byn (как суммарный долг за день) ---
+        if processed_date_ids:
+            logger.info(f"Начинается расчет и обновление суммарного долга для {len(processed_date_ids)} дат.")
+            for date_id_to_update in processed_date_ids:
+                try:
+                    # Рассчитываем сумму current_debt_byn для этой date_id
+                    sum_query = select(func.sum(DailyLoanBalance.current_debt_byn)).where(
+                        DailyLoanBalance.date_id == date_id_to_update
+                    )
+                    sum_result = await db_session.execute(sum_query)
+                    total_debt_for_day = sum_result.scalar_one_or_none()
+
+                    if total_debt_for_day is None:
+                        total_debt_for_day = Decimal('0.00')
+                    
+                    # Обновляем ВСЕ записи DailyLoanBalance для этой date_id
+                    # Устанавливаем total_repaid_byn в рассчитанную сумму
+                    update_statement = update(DailyLoanBalance).where(
+                        DailyLoanBalance.date_id == date_id_to_update
+                    ).values(total_repaid_byn=total_debt_for_day)
+                    
+                    await db_session.execute(update_statement)
+                    logger.info(f"✅ Обновлено total_repaid_byn для date_id {date_id_to_update} на сумму: {total_debt_for_day} (суммарный долг).")
+
+                except Exception as e:
+                    logger.error(f"❌ Ошибка при расчете/обновлении total_repaid_byn для date_id {date_id_to_update}: {str(e)}")
+                    logger.error(traceback.format_exc())
+                    # Продолжаем к следующему date_id, даже если возникла ошибка
+                    continue
+
+            # Финальный коммит пакетных обновлений
+            await db_session.commit()
+            logger.info("✅ Все агрегированные данные total_repaid_byn зафиксированы.")
+        else:
+            logger.info("ℹ️ Нет обработанных date_id для обновления суммарного долга.")
+        # --- END NEW LOGIC ---
 
         processing_time = datetime.now() - start_time
         processing_time_ms = int(processing_time.total_seconds() * 1000)
